@@ -1,9 +1,6 @@
-%% PnP Localizer
-%  TO DO
-%  -Add options flag. (mat file name, screen max or min, etc.)
-%  -Add COV maker
-%  -print number of voxels?
-function [FOSS] = runLocalizer3c(sub, cbl, acq)
+%% FOSS_ET
+%  FOSS Localizer with eye tracking.
+function [FOSS] = runLocalizer3dET(sub, cbl, acq)
 %% Start me up
 clc
 FOSS.curDir = cd;
@@ -80,11 +77,82 @@ PPD = tand(.5).*2.*viewingDistance.*(resWidth./screenWidth);
 visualAngle = PPD*visualAngle;
 stimSize = visualAngle;
 
+%% Eyelink Params
+ET = 1;
+pref_eye = 1; % 0 is left, 1 is right, 2 is both
+dummymode = 0;
+
+valid = 0;
+
+while ~valid
+    prompt = {'Enter tracker EDF file name (1 to 8 letters or numbers)'};
+    dlg_title = 'Create EDF File';
+    num_lines = 1;
+    def = {'DEMO'};
+    answer = inputdlg(prompt, dlg_title, num_lines, def);
+    edfFile = answer{1};
+    if max(size(edfFile)) <= 8
+        valid = 1;
+        fprintf('EDFFile: %s\n', edfFile);
+    end;
+end;
+
+
 %% PTB Setup
 Screen('Preference', 'SkipSyncTests', 2);
 [w, rect, xMid, yMid] = startPTB(screenNumber, 1, [128 128 128]);
 ifi = Screen('GetFlipInterval', w);
 HideCursor;
+
+%% Eyelink Setup
+
+el = EyelinkInitDefaults(w);
+
+if ~EyelinkInit(dummymode)
+    fprintf('Eyelink Init Aborted.\n');
+    Eyelink('Shutdown');
+    return;
+end;
+
+[v, vs] = Eyelink('GetTrackerVersion');
+fprintf('Running Experiment on a "%s" tracker.\n', vs);
+
+
+i = Eyelink('Openfile', edfFile);
+
+if i ~=0
+    fprintf('Cannot create EDF file "%s"', edffilename);
+    Eyelink('Shutdown');
+    return;
+end;
+
+Eyelink('command', 'add_file_preamble_text "Recorded by EyelinkToolbox. Script by SKW"');
+
+[width, height] = Screen('WindowSize', w);
+
+Eyelink('command', 'screen_pixel_coords = %ld %ld %ld %ld', 0, 0, width-1, height-1);
+Eyelink('message', 'DISPLAY_COORDS %ld %ld %ld %ld', 0, 0, width-1, height-1);
+
+Eyelink('command', 'calibration_type = HV9');
+Eyelink('command', 'saccade_velocity_threshold = 35');
+Eyelink('command', 'saccade_acceleration_threshold = 9500');
+
+Eyelink('command', 'file_event_filter = LEFT,RIGHT,FIXATION,SACCADE,BLINK,MESSAGE,BUTTON');
+Eyelink('command', 'file_sample_data = LEFT,RIGHT,GAZE,HREF,AREA,GAZERES,STATUS');
+Eyelink('command', 'link_event_filter = LEFT,RIGHT,FIXATION,SACCADE,BLINK,MESSAGE,BUTTON');
+Eyelink('command', 'link_sample_data = LEFT,RIGHT,GAZE,GAZERES,AREA,STATUS');
+
+if ( Eyelink('IsConnected') ~= 1 && ~dummymode )
+    Eyelink('Shutdown');
+    return;
+end;
+
+moveOn = 0;
+
+el.backgroundcolour = [128 128 128];
+el.foregroundcolour = [0 0 0];
+
+EyelinkDoTrackerSetup(el);
 
 %% Create Stimuli & Preallocate
 tex = cell(numStimSets, 1);
@@ -103,6 +171,15 @@ trigger(triggerKey);
 Screen('Flip', w);
 
 %% Main Loop
+Eyelink('Command', 'set_idle_mode');
+Eyelink('Command', 'clear_screen 0')
+
+WaitSecs(0.05);  
+Eyelink('StartRecording');    
+WaitSecs(0.1);
+
+eyeLinkTrial = 1;
+
 expStart = GetSecs;
 
 cpuTimeExpected = expStart;
@@ -111,13 +188,18 @@ realTimeExpected = 0;
 for blocks = 1:numBlocks
     blockStart = GetSecs;
     timeLogger.block(blocks).blockStart = GetSecs - expStart;
+    timeLogger.block(blocks).conditionN = conditionOrder(blocks);
     if conditionOrder(blocks) == 0
+        Eyelink('message', 'TRIALID %d', eyeLinkTrial);
         correctionTime = GetSecs - cpuTimeExpected;
         realTimeExpected = realTimeExpected + fixationTime + correctionTime;
         cpuTimeExpected = cpuTimeExpected + fixationTime + correctionTime;
         
         fixate(w);
         Screen('Flip', w, cpuTimeExpected - (ifi/2));
+        
+        Eyelink('message', 'TRIAL_RESULT 0');
+        eyeLinkTrial = eyeLinkTrial + 1;
     else
         tLstart = GetSecs;
         imageMatrix = randsample(imgsPerSet, imagesPerBlock);
@@ -135,6 +217,11 @@ for blocks = 1:numBlocks
         
         
         for trials = 1:imagesPerBlock
+            Eyelink('message', 'TRIALID %d', eyeLinkTrial);
+            Eyelink('message', '!V CLEAR 128 128 128');
+            Eyelink('command', 'record_status_message "TRIAL %d / %d"', eyeLinkTrial, ((numBlocks-1)/2)*(imagesPerBlock+1));
+            WaitSecs(0.05);
+            
             touch = 0;
             
             timeLogger.block(blocks).trial(trials).start = GetSecs-tLstart;
@@ -151,6 +238,9 @@ for blocks = 1:numBlocks
             Screen('DrawTexture', w, tex{conditionOrder(blocks)}{imageMatrix(trials)}, [], [xMid-(stimSize/2) yMid-(stimSize/2) xMid+(stimSize/2) yMid+(stimSize/2)]);
             Screen('Flip', w);
             
+            Eyelink('message', 'BEGIN IMAGE PRESENTATION');
+            Eyelink('Message', '!V IMGLOAD CENTER ./images/%s %d %d %d %d', STIMNAMES{TRIMAT(imageMatrix(trial), 3)}{TRIMAT(imageMatrix(trial), 2)}, round(width/2), round(height/2), round(stimSize.horizontal), round(stimSize.vertical));
+           
             while GetSecs <= stimEnd   %checks for keypress during stim presentation
                 [touch, ~, keyCode] = KbCheck(-1);
                 if touch && ~keyCode(triggerKey)
@@ -166,6 +256,8 @@ for blocks = 1:numBlocks
             Screen('Flip', w);
             timeLogger.block(blocks).trial(trials).imageEnd = GetSecs-tLstart;
             
+            Eyelink('message', 'BEGIN FIXATION TIME');
+            
             if touch == 0
                 while GetSecs < cpuTimeExpected-.05   %checks for keypress in fixation immediately following stim pres up until next stim pres.
                     [touch, ~, keyCode] = KbCheck(-1);
@@ -178,6 +270,8 @@ for blocks = 1:numBlocks
             
             while GetSecs <= cpuTimeExpected
                 if ~loggingIsDone
+                    Eyelink('message', '!V TRIAL_VAR IMG_NAME %s', STIMNAMES{TRIMAT(imageMatrix(trial), 3)}{TRIMAT(imageMatrix(trial), 2)});
+                    
                     ANSMAT{blocks}(trials,1) = conditionOrder(blocks); %condition number
                     ANSMAT{blocks}(trials,2) = imageMatrix(trials); %trial number
                     ANSMAT{blocks}(trials,3) = ~isempty(find(targets == (trials-1), 1)); %is it a target
@@ -208,6 +302,28 @@ for blocks = 1:numBlocks
             timeLogger.block(blocks).trial(trials).imageLength = timeLogger.block(blocks).trial(trials).imageEnd - timeLogger.block(blocks).trial(trials).start;
             timeLogger.block(blocks).trial(trials).blankLength = timeLogger.block(blocks).trial(trials).end - timeLogger.block(blocks).trial(trials).imageEnd;
             timeLogger.block(blocks).trial(trials).trialLength = timeLogger.block(blocks).trial(trials).end - timeLogger.block(blocks).trial(trials).start;
+            
+            switch conditionOrder(blocks)
+                case 1
+                    Eyelink('message', '!V TRIAL_VAR CONDITION FACE');
+                case 2
+                    Eyelink('message', '!V TRIAL_VAR CONDITION OBJECT');
+                case 3
+                    Eyelink('message', '!V TRIAL_VAR CONDITION SCENE');
+                case 4
+                    Eyelink('message', '!V TRIAL_VAR CONDITION SCRAM');
+            end;
+            
+            Eyelink('message', '!V IAREA RECTANGLE 2 %d %d %d %d IMAGE', width/2-(round(stimSize/2)), height/2-(round(stimSize/2)), width/2+(round(stimSize/2)), height/2+(round(stimSize/2)));
+            Eyelink('message', '!V IAREA RECTANGLE 3 %d %d %d %d QUAD1', width/2, height/2-(round(stimSize/2)), width/2+(round(stimSize/2)), height/2);
+            Eyelink('message', '!V IAREA RECTANGLE 4 %d %d %d %d QUAD2', width/2-(round(stimSize/2)), height/2-(round(stimSize/2)), width/2, height/2);
+            Eyelink('message', '!V IAREA RECTANGLE 5 %d %d %d %d QUAD3', width/2-(round(stimSize/2)), height/2, width/2, height/2+(round(stimSize/2)));
+            Eyelink('message', '!V IAREA RECTANGLE 6 %d %d %d %d QUAD4', width/2, height/2, width/2+(round(stimSize/2)), height/2+(round(stimSize/2)));
+            Eyelink('message', '!V IAREA RECTANGLE 6 %d %d %d %d QUADC', (width/2)-(round(stimSize/4)), (height/2)-(round(stimSize/4)), (width/2)+(round(stimSize/4)), (height/2)+(round(stimSize/4)));
+            
+            Eyelink('message', 'TRIAL_RESULT 0');
+            WaitSecs(.001);
+            eyeLinkTrial = eyeLinkTrial + 1;
         end;
     end;
     
@@ -226,33 +342,24 @@ Screen('Flip', w);
 FOSS.ANSMAT = ANSMAT;
 save(PATH, 'FOSS', 'timeLogger');
 
-% Create Covariate Files
-% cnt = [1 1 1 1 1];
-% 
-% for i = 1:numBlocks
-%     
-%     switch TIME_MAT(i, 1) %condition no
-%         case 1 % Faces
-%             COVAR{1}(cnt(1), :) = TIME_MAT(i, 2:4);
-%             cnt(1) = cnt(1) + 1;
-%         case 2 % Objects
-%             COVAR{2}(cnt(2), :) = TIME_MAT(i, 2:4);
-%             cnt(2) = cnt(2) + 1;
-%         case 3 % ObjectsScram
-%             COVAR{3}(cnt(3), :) = TIME_MAT(i, 2:4);
-%             cnt(3) = cnt(3) + 1;
-%         case 4 % Places
-%             COVAR{4}(cnt(4), :) = TIME_MAT(i, 2:4);
-%             cnt(4) = cnt(4) + 1;
-%         case 5 % Fixation
-%             COVAR{5}(cnt(5), :) = TIME_MAT(i, 2:4);
-%             cnt(5) = cnt(5) + 1;
-%     end;
-% end
-% 
-% for j = 1:5
-%     dlmwrite(sprintf('FOSS_Sub0%d_Run%d_Cov%d.txt', sub, cbl, j), COVAR{j}, 'delimiter', '\t', 'precision', 4);
-% end;
+cov1Filename = sprintf('FOSS%02d_CBL%02d_Acq%02d_Cov1_conStr.txt', sub, cbl, acq);
+cov2Filename = sprintf('FOSS%02d_CBL%02d_Acq%02d_Cov2_letter.txt', sub, cbl, acq);
+cov3Filename = sprintf('FOSS%02d_CBL%02d_Acq%02d_Cov3_number.txt', sub, cbl, acq);
+cov4Filename = sprintf('FOSS%02d_CBL%02d_Acq%02d_Cov4_numStr.txt', sub, cbl, acq);
+cov5Filename = sprintf('FOSS%02d_CBL%02d_Acq%02d_Cov5_numWrd.txt', sub, cbl, acq);
+cov6Filename = sprintf('FOSS%02d_CBL%02d_Acq%02d_Cov6_object.txt', sub, cbl, acq);
+cov7Filename = sprintf('FOSS%02d_CBL%02d_Acq%02d_Cov7_numScr.txt', sub, cbl, acq);
+cov8Filename = sprintf('FOSS%02d_CBL%02d_Acq%02d_Cov8_fixatn.txt', sub, cbl, acq);
+
+for block = 1:numBlocks
+    temp = [round(timeLogger.block(block).blockStart), round(timeLogger.block(block).blockLength), 1];
+    
+    if timeLogger.block(block).conditionN == 0
+        dlmwrite(cov8Filename, temp, 'delimiter', '\t', '-append');
+    else
+        eval(sprintf('dlmwrite(cov%dFilename, temp, ''delimiter'', ''\t'', ''-append'');', timeLogger.block(block).conditionN));
+    end;
+end;
 
 %% Shutdown Procedures
 ShowCursor;
