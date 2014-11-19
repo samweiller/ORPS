@@ -1,6 +1,6 @@
 %% FOSS_ET
 %  FOSS Localizer with eye tracking.
-function [FOSS] = runLocalizer3dET(sub, cbl, acq)
+function [FOSS] = runLocalizer3d(sub, cbl, acq)
 %% Start me up
 clc
 FOSS.curDir = cd;
@@ -239,7 +239,7 @@ for blocks = 1:numBlocks
             Screen('Flip', w);
             
             Eyelink('message', 'BEGIN IMAGE PRESENTATION');
-            Eyelink('Message', '!V IMGLOAD CENTER ./images/%s %d %d %d %d', STIMNAMES{TRIMAT(imageMatrix(trial), 3)}{TRIMAT(imageMatrix(trial), 2)}, round(width/2), round(height/2), round(stimSize.horizontal), round(stimSize.vertical));
+            Eyelink('Message', '!V IMGLOAD CENTER ./images/%s %d %d %d %d', STIMNAMES{TRIMAT(imageMatrix(trials), 3)}{TRIMAT(imageMatrix(trials), 2)}, round(width/2), round(height/2), round(stimSize.horizontal), round(stimSize.vertical));
            
             while GetSecs <= stimEnd   %checks for keypress during stim presentation
                 [touch, ~, keyCode] = KbCheck(-1);
