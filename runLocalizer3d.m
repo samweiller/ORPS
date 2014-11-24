@@ -28,7 +28,7 @@ clc
 %% Control Panel
 STIMS = [];
 
-stimuliMatFileName = 'localizerStimuli.mat';
+stimuliMatFileName = 'ORPSstims.mat';
 
 fprintf('Looking for stimuli...\n')
 if exist(stimuliMatFileName, 'file')
